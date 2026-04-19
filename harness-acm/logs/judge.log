@@ -1,0 +1,25 @@
+{"attempt": 1, "handle": "tourist", "score": 3, "reason": "无 API key，跳过 Judge 循环", "narrative_preview": "[模板评语，未检测到 ANTHROPIC_API_KEY]\n【强项】 tourist 在 string(100.0)、graph(99.9)、search(99.9) 三项技能突出；特征上 pressure(100.0)、speed(80."}
+{"attempt": 1, "handle": "tourist", "score": 3, "reason": "无 API key，跳过 Judge 循环", "narrative_preview": "[模板评语，未检测到 ANTHROPIC_API_KEY]\n【强项】 tourist 在 string(100.0)、graph(99.9)、search(99.9) 三项技能突出；特征上 pressure(100.0)、speed(80."}
+{"attempt": 1, "handle": "test", "score": 3, "reason": "无 API key，跳过 Judge 循环", "narrative_preview": "[模板评语，未检测到 ANTHROPIC_API_KEY]\n【强项】 test 在 dp(80.0) 三项技能突出；特征上 speed(70.0) 表现亮眼。\n【弱项】 相对薄弱的是 dp(80.0)，以及 speed(70.0)。\n【建议"}
+{"attempt": 1, "handle": "test", "score": 3, "reason": "无 API key，跳过 Judge 循环", "narrative_preview": "[模板评语，未检测到 ANTHROPIC_API_KEY]\n【强项】 test 在 dp(80.0) 三项技能突出；特征上 speed(70.0) 表现亮眼。\n【弱项】 相对薄弱的是 dp(80.0)，以及 speed(70.0)。\n【建议"}
+{"attempt": 1, "handle": "test", "score": 5, "reason": "完美", "narrative_preview": "生成版本 v0"}
+{"attempt": 1, "handle": "test", "score": 2, "reason": "建议不具体", "narrative_preview": "attempt#1"}
+{"attempt": 2, "handle": "test", "score": 5, "reason": "修正后可", "narrative_preview": "attempt#2"}
+{"attempt": 1, "handle": "test", "score": 2, "reason": "始终不及格", "narrative_preview": "bad"}
+{"attempt": 2, "handle": "test", "score": 2, "reason": "始终不及格", "narrative_preview": "bad"}
+{"attempt": 3, "handle": "test", "score": 2, "reason": "始终不及格", "narrative_preview": "bad"}
+{"attempt": 1, "handle": "test", "score": 5, "reason": "ok", "narrative_preview": "生成内容"}
+{"attempt": 1, "handle": "trace-test", "score": 5, "reason": "ok", "narrative_preview": "x"}
+{"attempt": 1, "handle": "test", "score": 3, "reason": "a", "narrative_preview": "x"}
+{"attempt": 2, "handle": "test", "score": 5, "reason": "b", "narrative_preview": "x"}
+{"attempt": 1, "handle": "test", "score": 3, "reason": "无 API key，跳过 Judge 循环", "narrative_preview": "[模板评语，未检测到 ANTHROPIC_API_KEY]\n【强项】 test 在 dp(80.0) 三项技能突出；特征上 speed(70.0) 表现亮眼。\n【弱项】 相对薄弱的是 dp(80.0)，以及 speed(70.0)。\n【建议"}
+{"attempt": 1, "handle": "test", "score": 5, "reason": "完美", "narrative_preview": "生成版本 v0"}
+{"attempt": 1, "handle": "test", "score": 2, "reason": "建议不具体", "narrative_preview": "attempt#1"}
+{"attempt": 2, "handle": "test", "score": 5, "reason": "修正后可", "narrative_preview": "attempt#2"}
+{"attempt": 1, "handle": "test", "score": 2, "reason": "始终不及格", "narrative_preview": "bad"}
+{"attempt": 2, "handle": "test", "score": 2, "reason": "始终不及格", "narrative_preview": "bad"}
+{"attempt": 3, "handle": "test", "score": 2, "reason": "始终不及格", "narrative_preview": "bad"}
+{"attempt": 1, "handle": "test", "score": 5, "reason": "ok", "narrative_preview": "生成内容"}
+{"attempt": 1, "handle": "trace-test", "score": 5, "reason": "ok", "narrative_preview": "x"}
+{"attempt": 1, "handle": "test", "score": 3, "reason": "a", "narrative_preview": "x"}
+{"attempt": 2, "handle": "test", "score": 5, "reason": "b", "narrative_preview": "x"}

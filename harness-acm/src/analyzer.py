@@ -1,23 +1,32 @@
-"""AggregatedStats → AbilityReport (评分层) + Claude 评语 + Judge 循环.
+"""AggregatedStats → AbilityReport (评分层) + OpenAI/Codex 评语 + Ensemble Judge 循环.
 
-评分公式参考 CLAUDE.md 阶段 3 设计.
-Judge 循环: 生成 → 审阅 → <4 分携带 feedback 重写，最多 2 轮重写.
+评分公式参考 AGENTS.md 的项目约定.
+Judge 循环: 生成 → 3-judge ensemble 并行审阅 → 中位数 <4 分携带 feedback 重写.
 """
 from __future__ import annotations
 
 import json
 import logging
 import math
-import os
+import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+from codex_api import (
+    CodexAPIConfigError,
+    generate_json,
+    generate_text,
+    has_api_key,
+)
+from metrics import emit_metric
 from schemas import (
     AbilityReport,
     AggregatedStats,
     Confidence,
+    JudgeEnsembleResult,
     JudgeResult,
     Profile,
     SkillDimension,
@@ -234,16 +243,9 @@ def generate_narrative(
     report: AbilityReport,
     feedback: Optional[str] = None,
 ) -> str:
-    """调 Haiku 生成评语；无 key 时降级到模板. feedback 非空时要求改写前版."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return "[模板评语，未检测到 ANTHROPIC_API_KEY]\n" + _template_narrative(report)
-
-    try:
-        from anthropic import Anthropic
-    except ImportError:
-        return "[模板评语，anthropic SDK 未安装]\n" + _template_narrative(report)
-
-    client = Anthropic()
+    """调 OpenAI Responses API 生成评语；无 key 时降级到模板."""
+    if not has_api_key():
+        return "[模板评语，未检测到 OPENAI_API_KEY]\n" + _template_narrative(report)
 
     data_block = {
         "handle": report.handle,
@@ -261,22 +263,17 @@ def generate_narrative(
             f"请针对反馈修正，保持格式规则不变。"
         )
 
-    resp = client.messages.create(
-        model="claude-haiku-4-5",
-        max_tokens=600,
-        system=[
-            {
-                "type": "text",
-                "text": _NARRATIVE_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": user_content}],
-    )
-    return resp.content[0].text.strip()
+    try:
+        return generate_text(
+            system_prompt=_NARRATIVE_SYSTEM,
+            user_content=user_content,
+            max_output_tokens=600,
+        )
+    except CodexAPIConfigError:
+        return "[模板评语，openai SDK 未安装]\n" + _template_narrative(report)
 
 
-# ---------- LLM-as-Judge ----------
+# ---------- LLM-as-Judge: 3 个不同风格的 prompt ----------
 
 _JUDGE_SYSTEM = """你是竞赛评语审阅员（严苛）. 按以下标准打 1-5 分：
 5: 三段齐 + 数字/tag 引用准确 + 建议具体到 难度段+tag+题量
@@ -289,34 +286,148 @@ _JUDGE_SYSTEM = """你是竞赛评语审阅员（严苛）. 按以下标准打 1
 不要 markdown 代码块、不要其它文字。"""
 
 
-def judge_report(report: AbilityReport) -> JudgeResult:
-    """用 Haiku 给 narrative 打分. 无 key 时返回默认 3 分."""
+_JUDGE_STRICT = """你是竞赛评语严格审阅员。重点查格式与完整性：
+- 必须有 【强项】【弱项】【建议】 三段，缺一段立即 1 分
+- 含"非常/极其/十分/特别"等空泛措辞 → 扣 1 分
+- 任一段落引用的维度不在 data 里 → 扣 2 分
+- 三段齐全、无空泛措辞、无编造 → 5 分
+
+只输出 JSON: {"score": 1-5整数, "reason": "<=30字解释"}
+不要 markdown 代码块、不要其它文字。"""
+
+
+_JUDGE_LENIENT = """你是竞赛评语宽松审阅员。重点看有无实用信息：
+- 只要三段齐、能让选手看到自己的长短板，默认 4 分
+- 建议明确到 tag 或难度段 → 加 1 分 → 5
+- 完全没有可操作性才打 3
+- 只有一段（或无格式）才 2
+- 完全胡编才 1
+
+只输出 JSON: {"score": 1-5整数, "reason": "<=30字解释"}
+不要 markdown 代码块、不要其它文字。"""
+
+
+_JUDGE_DATA = """你是竞赛评语数字审阅员（只看数据保真度）。
+规则：narrative 括号里写出的 score 数字必须与 data 中同维度数值相符（允许 ±1 误差）。
+- 所有引用数字都对 → 5
+- 1 处偏差 2-5 分 → 3
+- 1 处偏差 >5 分，或引用了 data 中不存在的维度 → 2
+- 多处数据错误 → 1
+
+输入包含 data JSON 与 narrative 文本，你必须交叉比对。
+只输出 JSON: {"score": 1-5整数, "reason": "<=30字解释, 必要时点名具体维度"}
+不要 markdown 代码块、不要其它文字。"""
+
+
+def _judge_with_prompt(
+    report: AbilityReport,
+    system_prompt: str,
+    judge_name: str,
+    include_data: bool = False,
+) -> JudgeResult:
+    """单个 judge 的核心调用；无 key / SDK 缺失 → 中性 3 分."""
     if not report.narrative:
-        return JudgeResult(score=1, reason="narrative 为空")
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return JudgeResult(score=3, reason="无 API key，跳过评审")
+        return JudgeResult(score=1, reason="narrative 为空", judge_name=judge_name)
+    if not has_api_key():
+        return JudgeResult(score=3, reason="无 API key，跳过评审",
+                           judge_name=judge_name)
+    # data judge 需要完整 data 做交叉比对；其他 judge 只看 narrative
+    if include_data:
+        data_block = {
+            "skills": [s.model_dump() for s in report.skills],
+            "traits": [t.model_dump() for t in report.traits],
+        }
+        user_content = (f"data:\n{json.dumps(data_block, ensure_ascii=False)}"
+                        f"\n\nnarrative:\n{report.narrative}")
+    else:
+        user_content = report.narrative
 
     try:
-        from anthropic import Anthropic
-    except ImportError:
-        return JudgeResult(score=3, reason="anthropic SDK 未安装")
+        text = generate_json(
+            system_prompt=system_prompt,
+            user_content=user_content,
+            schema_name="judge_result",
+            schema={
+                "type": "object",
+                "properties": {
+                    "score": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5,
+                    },
+                    "reason": {
+                        "type": "string",
+                    },
+                },
+                "required": ["score", "reason"],
+                "additionalProperties": False,
+            },
+            max_output_tokens=200,
+        )
+    except CodexAPIConfigError:
+        return JudgeResult(score=3, reason="openai SDK 未安装",
+                           judge_name=judge_name)
+    except Exception as e:
+        return JudgeResult(score=3, reason=f"API error: {str(e)[:40]}",
+                           judge_name=judge_name)
 
-    client = Anthropic()
-    resp = client.messages.create(
-        model="claude-haiku-4-5",
-        max_tokens=200,
-        system=[{"type": "text", "text": _JUDGE_SYSTEM,
-                 "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": report.narrative}],
-    )
-    text = resp.content[0].text.strip()
-    # 去掉可能的 markdown 代码块包裹
-    if text.startswith("```"):
-        text = text.strip("`").lstrip("json").strip()
     try:
-        return JudgeResult.model_validate(json.loads(text))
+        parsed = json.loads(text)
+        return JudgeResult(
+            score=int(parsed["score"]),
+            reason=str(parsed.get("reason", ""))[:60],
+            judge_name=judge_name,
+        )
     except Exception:
-        return JudgeResult(score=3, reason=f"JSON 解析失败: {text[:80]}")
+        return JudgeResult(score=3, reason=f"JSON 解析失败: {text[:40]}",
+                           judge_name=judge_name)
+
+
+def judge_report(report: AbilityReport) -> JudgeResult:
+    """向后兼容的单 judge 入口（仍用原 _JUDGE_SYSTEM prompt）."""
+    return _judge_with_prompt(report, _JUDGE_SYSTEM, judge_name="default")
+
+
+# ---------- Ensemble Judge (3 个并行，取中位数) ----------
+
+_ENSEMBLE_JUDGES: tuple[tuple[str, str, bool], ...] = (
+    ("strict", _JUDGE_STRICT, False),
+    ("lenient", _JUDGE_LENIENT, False),
+    ("data", _JUDGE_DATA, True),
+)
+
+
+def judge_report_ensemble(report: AbilityReport) -> JudgeEnsembleResult:
+    """3 个 judge 并行打分 → 中位数."""
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [
+            pool.submit(_judge_with_prompt, report, prompt, name, include_data)
+            for name, prompt, include_data in _ENSEMBLE_JUDGES
+        ]
+        results: list[JudgeResult] = []
+        for name, _, _ in _ENSEMBLE_JUDGES:
+            pass  # keep names in order
+        for i, fut in enumerate(futures):
+            name = _ENSEMBLE_JUDGES[i][0]
+            try:
+                results.append(fut.result(timeout=30))
+            except Exception as e:
+                results.append(JudgeResult(
+                    score=3, reason=f"judge error: {str(e)[:40]}",
+                    judge_name=name,
+                ))
+
+    scores = [r.score for r in results]
+    median = int(statistics.median(scores))
+    combined = " | ".join(f"[{r.judge_name}/{r.score}]{r.reason}" for r in results)
+
+    for r in results:
+        emit_metric("judge_run", handle=report.handle,
+                    judge_name=r.judge_name, score=r.score, reason=r.reason)
+
+    return JudgeEnsembleResult(
+        median_score=median, individual=results, combined_reason=combined,
+    )
 
 
 # ---------- Judge 重写循环（Feedback Loop 核心） ----------
@@ -334,53 +445,73 @@ if not _judge_logger.handlers:
 def generate_narrative_with_judge(
     report: AbilityReport,
     max_retries: int = 2,
-    on_attempt: Optional[Callable[[int, JudgeResult], None]] = None,
-) -> tuple[str, JudgeResult, list[dict]]:
-    """核心反馈循环：生成 → 审阅 → <4 分携带反馈重写.
+    on_attempt: Optional[Callable[[int, JudgeEnsembleResult], None]] = None,
+) -> tuple[str, JudgeEnsembleResult, list[dict]]:
+    """核心反馈循环：生成 → ensemble 审阅 → 中位数<4 时携带 combined feedback 重写.
 
-    返回 (最终评语, 最终 Judge, 所有尝试的 trace).
-    每次尝试都落盘 logs/judge.log 作为观测证据.
+    返回 (最终评语, 最终 JudgeEnsembleResult, 所有尝试的 trace).
+    每次尝试都落盘 logs/judge.log + logs/metrics.jsonl 作为观测证据.
     """
     trace: list[dict] = []
-    has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    has_key = has_api_key()
 
     # 无 key：跳过循环，走一次模板生成
     if not has_key:
         narrative = generate_narrative(report)
         report.narrative = narrative
-        judge = JudgeResult(score=3, reason="无 API key，跳过 Judge 循环")
+        fallback_individual = [
+            JudgeResult(score=3, reason="无 API key", judge_name=name)
+            for name, _, _ in _ENSEMBLE_JUDGES
+        ]
+        judge = JudgeEnsembleResult(
+            median_score=3,
+            individual=fallback_individual,
+            combined_reason="无 API key，跳过 Judge 循环",
+        )
         if on_attempt:
             on_attempt(1, judge)
         entry = {"attempt": 1, "handle": report.handle,
-                 "score": judge.score, "reason": judge.reason,
+                 "score": judge.median_score, "reason": judge.combined_reason,
+                 "individual_scores": [r.score for r in judge.individual],
                  "narrative_preview": narrative[:120]}
         _judge_logger.info(json.dumps(entry, ensure_ascii=False))
         trace.append(entry)
+        emit_metric("judge_loop_done", handle=report.handle,
+                    attempts=1, final_score=3,
+                    individual_scores=[r.score for r in judge.individual])
         return narrative, judge, trace
 
     # 有 key：最多 max_retries+1 次尝试
     feedback: Optional[str] = None
     narrative = ""
-    judge = JudgeResult(score=1, reason="未执行")
+    judge = JudgeEnsembleResult(
+        median_score=1, individual=[], combined_reason="未执行",
+    )
     for attempt in range(max_retries + 1):
         narrative = generate_narrative(report, feedback=feedback)
         report.narrative = narrative
-        judge = judge_report(report)
+        judge = judge_report_ensemble(report)
         entry = {
             "attempt": attempt + 1,
             "handle": report.handle,
-            "score": judge.score,
-            "reason": judge.reason,
+            "score": judge.median_score,
+            "reason": judge.combined_reason,
+            "individual_scores": [r.score for r in judge.individual],
             "narrative_preview": narrative[:120],
         }
         _judge_logger.info(json.dumps(entry, ensure_ascii=False))
         trace.append(entry)
         if on_attempt:
             on_attempt(attempt + 1, judge)
-        if judge.score >= 4:
+        if judge.median_score >= 4:
             break
-        feedback = f"上一版评语:\n{narrative}\n\n审阅反馈 ({judge.score}/5): {judge.reason}"
+        feedback = (f"上一版评语:\n{narrative}\n\n"
+                    f"审阅反馈 (中位数 {judge.median_score}/5): "
+                    f"{judge.combined_reason}")
 
+    emit_metric("judge_loop_done", handle=report.handle,
+                attempts=len(trace), final_score=judge.median_score,
+                individual_scores=[r.score for r in judge.individual])
     return narrative, judge, trace
 
 
@@ -393,9 +524,10 @@ if __name__ == "__main__":
     agg = aggregate(fetch_profile(handle, submissions=300))
     report = compute_abilities(agg)
 
-    def _progress(n: int, j: JudgeResult) -> None:
-        mark = "✓" if j.score >= 4 else "✗"
-        print(f"  [{mark}] 第 {n} 次: score={j.score}/5 · {j.reason}")
+    def _progress(n: int, j: JudgeEnsembleResult) -> None:
+        mark = "✓" if j.median_score >= 4 else "✗"
+        indiv = " ".join(f"{r.judge_name}={r.score}" for r in j.individual)
+        print(f"  [{mark}] 第 {n} 次: median={j.median_score}/5 · {indiv}")
 
     narrative, judge, trace = generate_narrative_with_judge(
         report, max_retries=2, on_attempt=_progress,

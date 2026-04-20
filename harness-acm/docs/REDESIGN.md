@@ -8,8 +8,8 @@
 
 | 裂缝 | 现状 | 代价 |
 |------|------|------|
-| **Context 只是文档** | `CLAUDE.md` / `SKILL.md` 写了"分层边界"，但没有任何机制在运行时/CI 时校验它 | `analyzer.py` 已经 407 行，混了评分公式 + Anthropic SDK + Judge 循环三件事，下次加一维很容易误跨层 |
-| **工具硬编码** | `fetcher.py` 直接 import `requests` + `sqlite3` + CF 域名；`analyzer.py` 直接 `from anthropic import Anthropic` | 换数据源（AtCoder）、换模型（Sonnet / 本地）、换缓存（Redis）都要改业务代码 |
+| **Context 只是文档** | `AGENTS.md` / `.codex/project.md` 写了"分层边界"，但没有任何机制在运行时/CI 时校验它 | `analyzer.py` 已经 407 行，混了评分公式 + OpenAI SDK + Judge 循环三件事，下次加一维很容易误跨层 |
+| **工具硬编码** | `fetcher.py` 直接 import `requests` + `sqlite3` + CF 域名；`analyzer.py` 直接 import 具体 LLM SDK | 换数据源（AtCoder）、换模型（Sonnet / 本地 / Codex）、换缓存（Redis）都要改业务代码 |
 | **Feedback 只有一条回路** | Judge 循环只审"评语文本"，不审"评分数字"；pytest 是事后批跑不是运行时闭环；没有回归基线 | tourist 的 dp 分数从 99 降到 85 不会报警；prompt 改坏了，要肉眼比 logs |
 | **Agent 单薄** | 单个 `cf-analyzer` skill，流程固定 5 步，输出是 TUI 字符串 | 没法做"对比两位选手""推荐 4 周训练计划"之类的组合任务；Agent 不能自己决定再抓 200 条 |
 
@@ -24,7 +24,7 @@
 │  Context   │   Tools    │    Feedback    │  Observability   │
 │ (规则即代码) │ (全部接口化) │ (5 道闸 + 基线) │   (指标 + 回归)    │
 ├────────────┼────────────┼────────────────┼──────────────────┤
-│ CLAUDE.md  │ DataSource │ 1 Schema       │ metrics.jsonl    │
+│ AGENTS.md  │ DataSource │ 1 Schema       │ metrics.jsonl    │
 │ SKILL.md×3 │ LLMClient  │ 2 Contract     │ baseline diff    │
 │ Contract   │ Cache      │ 3 pytest       │ judge stats      │
 │ Tests      │ Rubric     │ 4 Property     │ cache hit rate   │
@@ -37,7 +37,7 @@
 
 ### 1.1 Context 支柱：规则即代码
 
-- `CLAUDE.md` 保留为宪法，但**每条硬规则必须有一个 test 对应**。例：
+- `AGENTS.md` 保留为项目宪法，但**每条硬规则必须有一个 test 对应**。例：
   - 规则 "analyzer 不得访问 Profile" → `tests/contract/test_layer_boundaries.py` 用 AST 扫描 `scoring/*.py` 的 import，命中 `domain.profile` 立即 fail
   - 规则 "评语 ≤300 字" → `tests/unit/test_narrative_length.py` mock LLM 返回超长文本，断言循环拒绝并重写
 - 每个 SKILL.md 前 matter 里声明**结构化 args**（Pydantic 模型名），skill 正文只写流程与禁忌
@@ -90,7 +90,7 @@ class Cache(Protocol):
 
 ```
 harness-acm/
-├── CLAUDE.md                       # 宪法（每条规则 ↔ 一个 test）
+├── AGENTS.md                       # 宪法（每条规则 ↔ 一个 test）
 ├── README.md
 ├── pyproject.toml                  # 从 requirements.txt 升级
 ├── configs/                        # 外置配置（可切换）
@@ -137,7 +137,7 @@ harness-acm/
 │   │   └── tag_map.py              # tag → 维度映射
 │   │
 │   ├── narrator/                   # LLM 生成层（只管写字）
-│   │   ├── llm.py                  # LLMClient Protocol + Anthropic 实现
+│   │   ├── llm.py                  # LLMClient Protocol + OpenAI/Codex 实现
 │   │   ├── prompts.py              # 从 prompts/ 加载 + 版本号校验
 │   │   └── generate.py             # 一次生成调用
 │   │
@@ -156,7 +156,7 @@ harness-acm/
 │   │   │   ├── profile_args.py     # Pydantic: ProfileArgs
 │   │   │   ├── compare_args.py     # Pydantic: CompareArgs
 │   │   │   └── coach_args.py       # Pydantic: CoachArgs
-│   │   └── tools.py                # Claude tool_use schema 导出
+│   │   └── tools.py                # Agent tool schema 导出
 │   │
 │   └── cli/
 │       ├── main.py                 # argparse 入口（子命令 dispatcher）
@@ -191,12 +191,8 @@ harness-acm/
 │   ├── judge.log
 │   └── metrics.jsonl               # 新：观测数据
 │
-└── .claude/
-    ├── settings.json
-    └── skills/
-        ├── cf-profile/SKILL.md     # 单人画像
-        ├── cf-compare/SKILL.md     # 两人对比（新）
-        └── cf-coach/SKILL.md       # 长对话教练（新）
+└── .codex/
+    └── project.md                  # Codex 项目说明
 ```
 
 拆分尺度：没有超过 150 行的文件；`analyzer.py` 407 行被拆成 `scoring/{skills,traits,rubric}.py` + `narrator/{llm,generate}.py` + `loop/{single_judge,ensemble_judge}.py`，每件事一个文件。
@@ -217,7 +213,7 @@ harness-acm/
 
 ### 3.2 Tool Use 开放
 
-`agent/tools.py` 把下列函数导出为 Claude tool_use schema：
+`agent/tools.py` 把下列函数导出为 agent tool schema：
 
 - `fetch_profile(handle, submissions)`
 - `compute_abilities(stats, rubric)`
@@ -349,7 +345,7 @@ class ProfileArgs(BaseModel):
 
 2. **Ensemble Judge 成本 vs 稳定性的取舍**
    - 3 个 judge = 3× token 消耗
-   - 但 Haiku 4.5 的 judge 调用在 prompt cache 下边际成本很低（<$0.001/次）
+   - 但轻量 judge 模型的单次调用成本通常很低
    - **决定**：默认开 ensemble，`--single-judge` 降级
 
 3. **Agent Tool Use vs 纯脚本的取舍**
@@ -360,10 +356,10 @@ class ProfileArgs(BaseModel):
 
 ## 8. 验收清单
 
-- [ ] 每条 CLAUDE.md 硬规则都有一个测试
+- [ ] 每条 AGENTS.md 硬规则都有一个测试
 - [ ] `src/cfprof/` 任何文件 ≤150 行
 - [ ] `analyzer.py`（407 行）拆为 ≥5 个文件，每个单职责
-- [ ] 外部依赖（CF API / Anthropic / SQLite）全部 Protocol 化，测试不需 monkeypatch
+- [ ] 外部依赖（CF API / OpenAI / SQLite）全部 Protocol 化，测试不需 monkeypatch
 - [ ] Ensemble judge 3 个 prompt 版本化入库
 - [ ] tourist/jiangly/Um_nik 三条 baseline 入库，CI 每次跑 diff
 - [ ] 至少 3 个新命令：compare / plan / stats

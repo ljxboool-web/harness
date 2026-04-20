@@ -1,6 +1,7 @@
 """Codeforces API 封装 + SQLite 缓存 + 结构化日志."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -11,6 +12,7 @@ from typing import Any
 import requests
 from pydantic import ValidationError
 
+from metrics import emit_metric
 from schemas import (
     CFRatingChange,
     CFSubmission,
@@ -79,13 +81,18 @@ def _cache_put(key: str, value: Any) -> None:
 
 def _api_call(method: str, **params: Any) -> Any:
     key = f"{method}:{json.dumps(params, sort_keys=True)}"
+    key_hash = hashlib.md5(key.encode()).hexdigest()[:10]
     if (cached := _cache_get(key)) is not None:
         logger.info(json.dumps({"event": "cache_hit", "method": method}))
+        emit_metric("cache_hit", method=method, key_hash=key_hash)
         return cached
 
+    emit_metric("cache_miss", method=method, key_hash=key_hash)
     url = f"{API_BASE}/{method}"
     last_err: Exception | None = None
     for attempt in range(3):
+        t0 = time.time()
+        ok = False
         try:
             resp = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT)
             data = resp.json()
@@ -93,6 +100,7 @@ def _api_call(method: str, **params: Any) -> Any:
                 raise FetchError(f"{method}: {data.get('comment')}")
             result = data["result"]
             _cache_put(key, result)
+            ok = True
             logger.info(json.dumps({
                 "event": "api_ok", "method": method, "attempt": attempt,
             }))
@@ -104,6 +112,9 @@ def _api_call(method: str, **params: Any) -> Any:
                 "attempt": attempt, "error": str(e),
             }))
             time.sleep(1.5 ** attempt)
+        finally:
+            emit_metric("api_call_done", method=method, attempt=attempt,
+                        latency_ms=round((time.time() - t0) * 1000, 1), ok=ok)
     raise FetchError(f"{method} failed after 3 retries: {last_err}")
 
 

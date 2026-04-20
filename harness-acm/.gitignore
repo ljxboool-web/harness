@@ -1,0 +1,14 @@
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local secrets and env files
+.env
+.env.local
+
+# Runtime artifacts
+cache/*
+!cache/.gitkeep
+logs/*
+!logs/.gitkeep

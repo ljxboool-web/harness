@@ -1,4 +1,4 @@
-"""TUI 入口. 阶段 3：完整 8+5 维渲染 + AI 评语."""
+"""TUI 入口. 阶段 3：完整 8+5 维渲染 + Ensemble Judge 评语 + baseline 对比."""
 from __future__ import annotations
 
 import argparse
@@ -9,8 +9,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from aggregator import aggregate
 from analyzer import compute_abilities, generate_narrative_with_judge
+from baseline import diff_baseline, format_drift_table, load_baseline
 from fetcher import fetch_profile
-from schemas import JudgeResult
+from schemas import JudgeEnsembleResult
 
 
 # ANSI 颜色
@@ -55,22 +56,32 @@ def main() -> int:
                         help="跳过 AI 评语生成")
     parser.add_argument("--max-retries", type=int, default=2,
                         help="Judge <4 分时的最大重写次数（默认 2）")
+    parser.add_argument("--check-baseline", action="store_true",
+                        help="分析完成后与 baselines/{handle}.json 对比漂移")
+    parser.add_argument("--baseline-threshold", type=float, default=5.0,
+                        help="drift 超过多少分报警（默认 5.0）")
+    parser.add_argument("--strict", action="store_true",
+                        help="搭配 --check-baseline：有 drift 即 exit 1")
     args = parser.parse_args()
 
     profile = fetch_profile(args.handle, submissions=args.submissions)
     agg = aggregate(profile)
     report = compute_abilities(agg)
 
-    judge: JudgeResult | None = None
+    judge: JudgeEnsembleResult | None = None
     trace: list[dict] = []
     if not args.no_ai:
-        print(_section("评语生成 · Judge 审阅循环"))
+        print(_section("评语生成 · Ensemble Judge 审阅循环"))
 
-        def _on_attempt(n: int, j: JudgeResult) -> None:
-            color = GREEN if j.score >= 4 else (YELLOW if j.score >= 3 else RED)
-            mark = "✓" if j.score >= 4 else "✗"
-            print(f"  {color}[{mark}] 第 {n} 次 · {j.score}/5 · "
-                  f"{j.reason}{RESET}")
+        def _on_attempt(n: int, j: JudgeEnsembleResult) -> None:
+            color = GREEN if j.median_score >= 4 else (
+                YELLOW if j.median_score >= 3 else RED)
+            mark = "✓" if j.median_score >= 4 else "✗"
+            indiv = "  ".join(
+                f"{r.judge_name}={r.score}" for r in j.individual
+            )
+            print(f"  {color}[{mark}] 第 {n} 次 · median {j.median_score}/5"
+                  f"{RESET}  {DIM}[{indiv}]{RESET}")
 
         narrative, judge, trace = generate_narrative_with_judge(
             report, max_retries=args.max_retries, on_attempt=_on_attempt,
@@ -118,14 +129,35 @@ def main() -> int:
     if report.narrative:
         print(report.narrative)
         if judge is not None:
-            final_color = GREEN if judge.score >= 4 else YELLOW
-            print(f"\n{DIM}— 最终 Judge 评分：{final_color}{judge.score}/5{RESET}"
-                  f"{DIM} · 共 {len(trace)} 轮 · trace → logs/judge.log{RESET}")
+            final_color = GREEN if judge.median_score >= 4 else YELLOW
+            indiv = " ".join(
+                f"{r.judge_name}={r.score}" for r in judge.individual
+            )
+            print(f"\n{DIM}— 最终 Judge 中位数：{final_color}{judge.median_score}/5{RESET}"
+                  f"{DIM} · 共 {len(trace)} 轮 · [{indiv}]"
+                  f" · trace → logs/judge.log{RESET}")
     else:
         print(f"{DIM}(已跳过 AI 评语){RESET}")
 
+    # --- Baseline 对比 ---
+    exit_code = 0
+    if args.check_baseline:
+        print(_section("Baseline 对比"))
+        if load_baseline(args.handle) is None:
+            print(f"{YELLOW}baselines/{args.handle}.json 不存在{RESET}")
+            print(f"{DIM}先跑: python src/baseline.py update {args.handle}{RESET}")
+        else:
+            drifts = diff_baseline(report, threshold=args.baseline_threshold)
+            if drifts:
+                color = RED if args.strict else YELLOW
+                print(f"{color}{format_drift_table(drifts)}{RESET}")
+                if args.strict:
+                    exit_code = 1
+            else:
+                print(f"{GREEN}0 drift · 阈值 {args.baseline_threshold}{RESET}")
+
     print(f"\n{DIM}{'─' * 60}{RESET}")
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -164,3 +164,19 @@ class AbilityReport(BaseModel):
 class JudgeResult(BaseModel):
     score: int = Field(ge=1, le=5)
     reason: str
+    judge_name: str = "default"  # ensemble 中用来区分三个 judge；单 judge 保持 default
+
+
+class JudgeEnsembleResult(BaseModel):
+    """3 个 judge 并行打分 → 中位数。"""
+    median_score: int = Field(ge=1, le=5)
+    individual: list[JudgeResult]  # 长度应为 3
+    combined_reason: str  # 拼接所有 judge 的 reason，用于 rewrite feedback
+
+
+class Drift(BaseModel):
+    """Baseline 与当前报告在某维度上的偏差."""
+    dimension: str
+    old: float
+    new: float
+    delta: float  # new - old

@@ -12,7 +12,7 @@
 
 输入一个 Codeforces handle，输出多维算法实力评估 + 个性化成长建议（TUI / HTTP API）。
 
-## 角色定位
+## AI角色定位
 
 你是一位资深竞赛教练助手。当用户提供 Codeforces handle 时，你要：
 1. 通过 CF 官方 API 抓取公开数据（无需登录）

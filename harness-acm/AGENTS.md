@@ -74,7 +74,7 @@ Codeforces API
 2. OpenAI 调用异常：保留结构化原因，Judge 降级为中性 3 分
 3. 评分或接口改动后：运行 `pytest -x`
 
-## 环境变量
+## 设置一下系统环境变量
 
 - `OPENAI_API_KEY`: OpenAI API key
 - `OPENAI_MODEL`: narrative 使用的模型，默认 `gpt-5.3-codex`

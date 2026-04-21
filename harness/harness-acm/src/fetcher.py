@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from metrics import emit_metric
 from schemas import (
+    CFProblem,
     CFRatingChange,
     CFSubmission,
     CFUserInfo,
@@ -143,6 +144,30 @@ def get_submissions(handle: str, count: int = 500) -> list[CFSubmission]:
 def get_rating_history(handle: str) -> list[CFRatingChange]:
     data = _api_call("user.rating", handle=handle)
     return [CFRatingChange.model_validate(r) for r in data]
+
+
+def get_problemset_problems() -> list[CFProblem]:
+    """抓取 Codeforces problemset，用于题单推荐."""
+    data = _api_call("problemset.problems")
+    raw_problems = data.get("problems", [])
+    raw_stats = data.get("problemStatistics", [])
+    solved_by_key = {
+        (row.get("contestId"), row.get("index")): int(row.get("solvedCount", 0))
+        for row in raw_stats
+    }
+    out: list[CFProblem] = []
+    for row in raw_problems:
+        try:
+            problem = CFProblem.model_validate(row)
+            solved_count = solved_by_key.get((problem.contestId, problem.index), 0)
+            out.append(problem.model_copy(update={"solved_count": solved_count}))
+        except ValidationError:
+            logger.error(json.dumps({
+                "event": "problem_parse_err",
+                "contestId": row.get("contestId"),
+                "index": row.get("index"),
+            }))
+    return out
 
 
 def fetch_profile(handle: str, submissions: int = 500) -> Profile:

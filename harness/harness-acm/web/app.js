@@ -24,6 +24,7 @@ const state = {
   analysis: null,          // { user, aggregated, report, rating_history }
   narrativeTrace: null,    // SSE attempt events
   narrativeFinal: null,    // final narrative payload
+  practicePlan: null,
   baselineDiff: null,
   metrics: null,
   autoRefreshTimer: null,
@@ -32,6 +33,7 @@ const state = {
     analyze: null,
     baseline: null,
     metrics: null,
+    recommendations: null,
   },
 };
 
@@ -167,6 +169,7 @@ async function runAnalyze(handle, submissions) {
   stopAutoRefresh();
   abortRequest('baseline');
   abortRequest('metrics');
+  abortRequest('recommendations');
   const controller = createRequestController('analyze');
   try {
     const data = await api(
@@ -178,6 +181,7 @@ async function runAnalyze(handle, submissions) {
     state.analysis = data;
     state.narrativeTrace = null;
     state.narrativeFinal = null;
+    state.practicePlan = null;
     state.baselineDiff = null;
     renderProfile();
     setStatus(`已加载 ${handle}`, 'ok');
@@ -231,6 +235,11 @@ function renderProfile() {
   `;
   document.getElementById('narrate-chip').textContent = '';
   document.getElementById('narrate-chip').className = 'chip dim';
+  document.getElementById('problemset-body').innerHTML = `
+    <div class="muted small">根据 rating 和薄弱技能推荐未尝试过的 Codeforces 题目。</div>
+  `;
+  document.getElementById('problemset-chip').textContent = '';
+  document.getElementById('problemset-chip').className = 'chip dim';
 }
 
 function renderSkillsRadar(skills) {
@@ -555,6 +564,79 @@ function escapeHTML(s) {
   return String(s || '').replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])
   );
+}
+
+// ========== PRACTICE PLAN ==========
+
+async function loadPracticePlan() {
+  if (!state.handle || !state.analysis) return;
+  const btn = document.getElementById('problemset-btn');
+  const chip = document.getElementById('problemset-chip');
+  const body = document.getElementById('problemset-body');
+  btn.disabled = true;
+  chip.textContent = '生成中…';
+  chip.className = 'chip info';
+  body.innerHTML = '<div class="muted small">正在筛选题目…</div>';
+  const subs = document.getElementById('submissions-input').value;
+  const controller = createRequestController('recommendations');
+  try {
+    const plan = await api(
+      `/api/recommendations/${encodeURIComponent(state.handle)}?submissions=${subs}&limit=9`,
+      { signal: controller.signal },
+    );
+    if (state.requestControllers.recommendations !== controller) return;
+    state.practicePlan = plan;
+    renderPracticePlan(plan);
+    const source = plan.source === 'dashscope' ? 'DashScope' : '本地推荐器';
+    chip.textContent = `${source} · ${plan.problems.length} 题 · ${plan.target_rating_min}-${plan.target_rating_max}`;
+    chip.className = 'chip ok';
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    chip.textContent = '失败';
+    chip.className = 'chip err';
+    body.innerHTML = `<div class="chip err">题单生成失败: ${escapeHTML(e.message)}</div>`;
+  } finally {
+    if (state.requestControllers.recommendations === controller) {
+      state.requestControllers.recommendations = null;
+    }
+    btn.disabled = false;
+  }
+}
+
+function renderPracticePlan(plan) {
+  const body = document.getElementById('problemset-body');
+  if (!plan.problems || !plan.problems.length) {
+    body.innerHTML = '<div class="empty-row muted">没有找到匹配题目，可以调大 submissions 或稍后重试</div>';
+    return;
+  }
+  const weak = (plan.weak_skills || []).map(s => `<span class="skill-pill">${escapeHTML(s)}</span>`).join('');
+  body.innerHTML = `
+    <div class="plan-summary">
+      <div>${escapeHTML(plan.summary)}</div>
+      <div class="plan-meta">
+        <span class="chip info">rating ${plan.rating ?? '—'}</span>
+        <span class="chip">target ${plan.target_rating_min}-${plan.target_rating_max}</span>
+        ${weak}
+      </div>
+    </div>
+    <div class="problem-grid">
+      ${plan.problems.map((p, idx) => `
+        <a class="problem-card" href="${escapeHTML(p.url)}" target="_blank" rel="noopener noreferrer">
+          <div class="problem-topline">
+            <span class="mono">${idx + 1}. ${p.contest_id}${escapeHTML(p.index)}</span>
+            <span class="problem-rating">${p.rating}</span>
+          </div>
+          <div class="problem-name">${escapeHTML(p.name)}</div>
+          <div class="problem-reason">${escapeHTML(p.reason)}</div>
+          <div class="problem-tags">
+            <span class="skill-pill">${escapeHTML(p.target_skill)}</span>
+            ${(p.tags || []).slice(0, 4).map(t => `<span>${escapeHTML(t)}</span>`).join('')}
+          </div>
+          <div class="muted small">solved by ${p.solved_count ?? 0}</div>
+        </a>
+      `).join('')}
+    </div>
+  `;
 }
 
 // ========== JUDGE TAB ==========
@@ -911,6 +993,7 @@ function init() {
 
   // Narrate
   document.getElementById('narrate-btn').addEventListener('click', startNarrate);
+  document.getElementById('problemset-btn').addEventListener('click', loadPracticePlan);
 
   // Baseline
   const thInput = document.getElementById('threshold-input');
@@ -942,6 +1025,7 @@ function init() {
     abortRequest('analyze');
     abortRequest('baseline');
     abortRequest('metrics');
+    abortRequest('recommendations');
   });
   onHashChange();
 }

@@ -185,6 +185,14 @@ def aggregate(profile: Profile) -> AggregatedStats:
         tag_solved=dict(tag_solved),
         tag_attempted=dict(tag_attempted),
         tag_max_rating=tag_max_rating,
+        attempted_problem_keys=[
+            ":".join(str(part) for part in key)
+            for key in sorted(attempted_info.keys(), key=str)
+        ],
+        solved_problem_keys=[
+            ":".join(str(part) for part in key)
+            for key in sorted(solved_info.keys(), key=str)
+        ],
         rating=rating_stats,
         daily_submission_count=dict(daily),
         mean_ac_contest_minutes=mean_ac_contest_minutes,

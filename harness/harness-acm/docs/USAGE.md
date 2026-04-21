@@ -50,6 +50,8 @@ export DASHSCOPE_ENABLE_THINKING=false
 | `python src/baseline.py check <handle>` | 对比当前分数 vs baseline，报告 drift |
 | `python src/metrics.py stats` | 打印 `logs/metrics.jsonl` 的聚合摘要 |
 
+Web API 额外提供 `GET /api/recommendations/{handle}`：基于选手 rating、薄弱技能和 Codeforces problemset 生成训练题单。
+
 ---
 
 ## 3. 主 CLI · `src/cli.py`

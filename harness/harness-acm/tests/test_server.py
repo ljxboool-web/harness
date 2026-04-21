@@ -15,6 +15,7 @@ import metrics
 import server
 from fetcher import FetchError
 from schemas import (
+    CFProblem,
     CFRatingChange,
     CFUserInfo,
     Profile,
@@ -96,6 +97,35 @@ def test_analyze_happy(client):
     r0 = data["rating_history"][0]
     assert {"ts", "newRating", "oldRating", "delta", "contestName", "rank"} <= r0.keys()
     assert r0["delta"] == 100
+
+
+def test_recommendations_happy(client, monkeypatch):
+    import analyzer
+    monkeypatch.setattr(analyzer, "has_api_key", lambda: False)
+    monkeypatch.setattr(server, "get_problemset_problems", lambda: [
+        CFProblem(
+            contestId=1000, index="A", name="DP Practice",
+            rating=1900, tags=["dp"], solved_count=5000,
+        ),
+        CFProblem(
+            contestId=1001, index="B", name="Graph Practice",
+            rating=2000, tags=["graphs"], solved_count=4200,
+        ),
+        CFProblem(
+            contestId=1002, index="C", name="Math Practice",
+            rating=2100, tags=["math"], solved_count=3900,
+        ),
+    ])
+
+    resp = client.get("/api/recommendations/fakehandle?submissions=50&limit=3")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["handle"] == "fakehandle"
+    assert data["target_rating_min"] <= data["target_rating_max"]
+    assert 1 <= len(data["problems"]) <= 3
+    assert data["problems"][0]["url"].startswith("https://codeforces.com/problemset/problem/")
+    assert "reason" in data["problems"][0]
 
 
 def test_analyze_fetch_error(monkeypatch):

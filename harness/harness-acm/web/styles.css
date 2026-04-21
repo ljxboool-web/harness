@@ -470,6 +470,107 @@ button:disabled {
   margin-right: 6px;
 }
 
+/* ========== PRACTICE PLAN ========== */
+.problemset-card .problemset-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.problemset-body {
+  min-height: 80px;
+}
+
+.plan-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.plan-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.problem-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.problem-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 190px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.problem-card:hover {
+  border-color: var(--accent-2);
+}
+
+.problem-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.problem-rating {
+  color: var(--accent-2);
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+.problem-name {
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.problem-reason {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.problem-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.problem-tags span,
+.skill-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  color: var(--muted);
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.skill-pill {
+  color: var(--accent-2);
+  border-color: rgba(0, 191, 165, 0.45);
+}
+
 /* ========== DRIFT TABLE ========== */
 .drift-table {
   width: 100%;
@@ -686,7 +787,8 @@ canvas { max-width: 100%; }
   .card-header,
   .baseline-controls,
   .metrics-controls,
-  .narrative-card .narrative-controls {
+  .narrative-card .narrative-controls,
+  .problemset-card .problemset-controls {
     align-items: flex-start;
     flex-wrap: wrap;
   }
@@ -724,5 +826,15 @@ canvas { max-width: 100%; }
 
   .log-line {
     flex-wrap: wrap;
+  }
+
+  .problem-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 641px) and (max-width: 1180px) {
+  .problem-grid {
+    grid-template-columns: 1fr 1fr;
   }
 }

@@ -25,9 +25,13 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from aggregator import aggregate
-from analyzer import compute_abilities, generate_narrative_with_judge
+from analyzer import (
+    compute_abilities,
+    generate_narrative_with_judge,
+    generate_practice_plan,
+)
 from baseline import diff_baseline, load_baseline, save_baseline
-from fetcher import FetchError, fetch_profile
+from fetcher import FetchError, fetch_profile, get_problemset_problems
 from metrics import summarize
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -196,6 +200,26 @@ async def api_narrate(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/api/recommendations/{handle}")
+def api_recommendations(
+    handle: str,
+    submissions: int = Query(500, ge=10, le=5000),
+    limit: int = Query(9, ge=1, le=30),
+):
+    """根据选手 rating + 薄弱技能，从 CF problemset 生成训练题单."""
+    try:
+        _, agg, report = _run_pipeline(handle, submissions)
+        problems = get_problemset_problems()
+    except HTTPException:
+        raise
+    except FetchError as e:
+        raise HTTPException(status_code=502, detail=f"fetch failed: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"recommendation error: {e}")
+    plan = generate_practice_plan(agg, report, problems, max_problems=limit)
+    return plan.model_dump()
 
 
 @app.get("/api/baseline/{handle}")

@@ -1,0 +1,23 @@
+{
+  "handle": "wensy",
+  "snapshot_at": 1776683107,
+  "skills": {
+    "dp": 50.9,
+    "graph": 46.6,
+    "math": 71.5,
+    "greedy": 73.8,
+    "data_structure": 69.9,
+    "string": 60.8,
+    "search": 73.6,
+    "geometry": 41.8
+  },
+  "traits": {
+    "stability": 0.0,
+    "speed": 100.0,
+    "pressure": 93.9,
+    "breakthrough": 50.0,
+    "activity": 0.0
+  },
+  "rating": 1662,
+  "peak": 1662
+}

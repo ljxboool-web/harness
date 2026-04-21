@@ -128,6 +128,20 @@ def test_recommendations_happy(client, monkeypatch):
     assert "reason" in data["problems"][0]
 
 
+def test_code_style_endpoint(client):
+    resp = client.post("/api/code-style", json={
+        "filename": "main.cpp",
+        "code": "int main() { return 0; }\n",
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["language"] == "cpp"
+    assert 0 <= data["score"] <= 100
+    assert "metrics" in data
+    assert "recommendations" in data
+
+
 def test_analyze_fetch_error(monkeypatch):
     def boom(handle, submissions=500):
         raise FetchError("simulated 503")

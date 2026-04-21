@@ -1,0 +1,23 @@
+{
+  "handle": "booolljx",
+  "snapshot_at": 1776791114,
+  "skills": {
+    "dp": 66.4,
+    "graph": 64.9,
+    "math": 79.0,
+    "greedy": 79.1,
+    "data_structure": 79.5,
+    "string": 51.7,
+    "search": 79.2,
+    "geometry": 0.0
+  },
+  "traits": {
+    "stability": 0.0,
+    "speed": 57.1,
+    "pressure": 100.0,
+    "breakthrough": 100.0,
+    "activity": 55.3
+  },
+  "rating": 1264,
+  "peak": 1264
+}

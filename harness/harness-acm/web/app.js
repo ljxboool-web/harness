@@ -8,6 +8,47 @@ const SKILL_DIMS = ['dp', 'graph', 'math', 'greedy', 'data_structure', 'string',
 const TRAIT_DIMS = ['stability', 'speed', 'pressure', 'breakthrough', 'activity'];
 const VERDICT_SLOTS = ['ok', 'wrong_answer', 'time_limit_exceeded', 'memory_limit_exceeded', 'runtime_error', 'compilation_error', 'other'];
 const VERDICT_COLORS = ['#3fb950', '#f85149', '#d29922', '#bc8cff', '#ff7b72', '#6e7681', '#484f58'];
+const VERDICT_LABELS = {
+  ok: 'AC',
+  wrong_answer: 'WA',
+  time_limit_exceeded: 'TLE',
+  memory_limit_exceeded: 'MLE',
+  runtime_error: 'RTE',
+  compilation_error: 'CE',
+  other: 'Other',
+};
+const VERDICT_DIAGNOSIS = {
+  wrong_answer: {
+    title: '思路或边界条件偏差',
+    principle: '程序能运行但答案不符合题意，常见原因是算法假设错、漏特判、样例外边界没有覆盖。',
+    action: '回看题意量词、构造反例，并把 WA 前的关键变量打印成可复现样例。',
+  },
+  time_limit_exceeded: {
+    title: '复杂度或实现常数失控',
+    principle: '逻辑方向可能接近正确，但时间复杂度、循环边界、数据结构选择或 I/O 常数无法通过最大数据。',
+    action: '先按约束重算复杂度，再检查重复计算、嵌套循环和可替换的数据结构。',
+  },
+  memory_limit_exceeded: {
+    title: '状态规模或存储方式过大',
+    principle: '算法需要的数组、图、DP 状态或缓存超过内存限制，通常是建模规模没有被压缩。',
+    action: '优先检查维度乘积、邻接表构造、可滚动数组和是否保存了不必要历史状态。',
+  },
+  runtime_error: {
+    title: '边界访问或未定义路径',
+    principle: '程序在某些输入上崩溃，常见于越界、空容器访问、递归过深、除零或类型转换异常。',
+    action: '用最小边界输入测试空集、单点、极值、递归深度和下标闭开区间。',
+  },
+  compilation_error: {
+    title: '语言/模板/提交环境问题',
+    principle: '代码还没进入运行阶段，问题多来自语法、头文件、标准版本、宏或本地环境和评测环境差异。',
+    action: '固定一套可提交模板，提交前用目标语言标准做一次干净编译。',
+  },
+  other: {
+    title: '非典型判题反馈',
+    principle: '包含 presentation、idleness、partial、skipped 等不常见结果，通常需要结合具体提交逐个看。',
+    action: '打开最近失败提交，先确认是否为交互、输出格式或平台状态问题。',
+  },
+};
 const JUDGE_NAMES = ['strict', 'lenient', 'data'];
 const JUDGE_COLORS = { strict: '#f85149', lenient: '#3fb950', data: '#58a6ff' };
 const HEATMAP_LEVELS = ['#161b22', '#0e4429', '#006d32', '#26a641', '#39d353'];
@@ -25,6 +66,8 @@ const state = {
   narrativeTrace: null,    // SSE attempt events
   narrativeFinal: null,    // final narrative payload
   practicePlan: null,
+  codeStyle: null,
+  codeStyleFilename: null,
   baselineDiff: null,
   metrics: null,
   autoRefreshTimer: null,
@@ -34,6 +77,7 @@ const state = {
     baseline: null,
     metrics: null,
     recommendations: null,
+    codeStyle: null,
   },
 };
 
@@ -144,6 +188,7 @@ function activateTab(tab) {
     el.classList.toggle('active', el.dataset.tab === tab);
   });
   if (tab === 'judge') renderJudge();
+  if (tab === 'errors') renderErrorAnalysis();
   if (tab === 'baseline' && state.handle) loadBaseline();
   if (tab !== 'baseline') abortRequest('baseline');
   if (tab === 'metrics') {
@@ -170,6 +215,7 @@ async function runAnalyze(handle, submissions) {
   abortRequest('baseline');
   abortRequest('metrics');
   abortRequest('recommendations');
+  abortRequest('codeStyle');
   const controller = createRequestController('analyze');
   try {
     const data = await api(
@@ -182,6 +228,7 @@ async function runAnalyze(handle, submissions) {
     state.narrativeTrace = null;
     state.narrativeFinal = null;
     state.practicePlan = null;
+    state.codeStyle = null;
     state.baselineDiff = null;
     renderProfile();
     setStatus(`已加载 ${handle}`, 'ok');
@@ -240,6 +287,8 @@ function renderProfile() {
   `;
   document.getElementById('problemset-chip').textContent = '';
   document.getElementById('problemset-chip').className = 'chip dim';
+  resetCodeStyleCard();
+  if ((location.hash || '#profile') === '#errors') renderErrorAnalysis();
 }
 
 function renderSkillsRadar(skills) {
@@ -450,6 +499,371 @@ function renderHeatmap(dailyMap) {
   ).join('') + ' 多';
 }
 
+// ========== ERROR ANALYSIS TAB ==========
+
+function verdictTotal(v) {
+  return VERDICT_SLOTS.reduce((sum, k) => sum + (v[k] || 0), 0);
+}
+
+function formatPctValue(rate, digits = 1) {
+  if (rate === null || rate === undefined || Number.isNaN(rate)) return '—';
+  return (rate * 100).toFixed(digits) + '%';
+}
+
+function riskFromAcRate(acRate, total) {
+  if (!total) return { label: '无样本', cls: '', detail: '没有可分析的提交' };
+  if (total < 20) return { label: '样本少', cls: 'warn', detail: `${total} 次提交，结论仅作参考` };
+  if (acRate >= 0.75) return { label: '低', cls: 'ok', detail: '失败主要是零散错误' };
+  if (acRate >= 0.55) return { label: '中', cls: 'warn', detail: '存在稳定的错误模式' };
+  if (acRate >= 0.35) return { label: '高', cls: 'err', detail: '错误对产出影响明显' };
+  return { label: '严重', cls: 'err', detail: '需要先修正基础提交流程' };
+}
+
+function primaryError(verdicts) {
+  const errors = VERDICT_SLOTS
+    .filter(k => k !== 'ok')
+    .map(k => ({ key: k, count: verdicts[k] || 0 }))
+    .sort((a, b) => b.count - a.count);
+  return errors[0] || { key: 'other', count: 0 };
+}
+
+function repeatSignal(aggregated) {
+  const unique = aggregated.unique_problems_attempted || 0;
+  if (!unique) return { value: '—', cls: '', detail: '没有去重题目样本' };
+  const ratio = aggregated.total_submissions / unique;
+  if (ratio <= 1.6) {
+    return { value: ratio.toFixed(1) + 'x', cls: 'ok', detail: '单题返工较少' };
+  }
+  if (ratio <= 3.0) {
+    return { value: ratio.toFixed(1) + 'x', cls: 'warn', detail: '部分题需要多次修正' };
+  }
+  return { value: ratio.toFixed(1) + 'x', cls: 'err', detail: '调试或审题返工偏高' };
+}
+
+function renderErrorAnalysis() {
+  const empty = document.getElementById('errors-empty');
+  const content = document.getElementById('errors-content');
+  if (!state.analysis) {
+    empty.hidden = false;
+    content.hidden = true;
+    return;
+  }
+  empty.hidden = true;
+  content.hidden = false;
+
+  const { aggregated, report } = state.analysis;
+  const verdicts = aggregated.verdicts;
+  const total = verdictTotal(verdicts);
+  const acRate = total ? (verdicts.ok || 0) / total : 0;
+  const errorTotal = Math.max(0, total - (verdicts.ok || 0));
+  const primary = primaryError(verdicts);
+  const primaryMeta = VERDICT_DIAGNOSIS[primary.key] || VERDICT_DIAGNOSIS.other;
+  const risk = riskFromAcRate(acRate, total);
+  const repeat = repeatSignal(aggregated);
+
+  const acEl = document.getElementById('error-ac-rate');
+  acEl.textContent = formatPctValue(acRate);
+  acEl.className = 'metric-value ' + (acRate >= 0.75 ? 'ok' : acRate >= 0.55 ? 'warn' : 'err');
+  document.getElementById('error-ac-detail').textContent =
+    `${verdicts.ok || 0} AC / ${total} submissions`;
+
+  const primaryEl = document.getElementById('error-primary');
+  if (primary.count > 0) {
+    primaryEl.textContent = VERDICT_LABELS[primary.key];
+    primaryEl.className = 'metric-value ' + (primary.key === 'wrong_answer' || primary.key === 'time_limit_exceeded' ? 'warn' : 'err');
+    document.getElementById('error-primary-detail').textContent =
+      `${primary.count} 次 · 错误中占 ${formatPctValue(primary.count / Math.max(1, errorTotal), 0)}`;
+  } else {
+    primaryEl.textContent = '无明显';
+    primaryEl.className = 'metric-value ok';
+    document.getElementById('error-primary-detail').textContent = '当前样本没有失败提交';
+  }
+
+  const riskEl = document.getElementById('error-risk');
+  riskEl.textContent = risk.label;
+  riskEl.className = 'metric-value' + (risk.cls ? ' ' + risk.cls : '');
+  document.getElementById('error-risk-detail').textContent = risk.detail;
+
+  const repeatEl = document.getElementById('error-repeat');
+  repeatEl.textContent = repeat.value;
+  repeatEl.className = 'metric-value' + (repeat.cls ? ' ' + repeat.cls : '');
+  document.getElementById('error-repeat-detail').textContent = repeat.detail;
+
+  const difficultyHotspots = computeDifficultyHotspots(aggregated.difficulty_buckets);
+  const tagHotspots = computeTagHotspots(aggregated.tag_attempted, aggregated.tag_solved);
+  const weakSkills = [...report.skills]
+    .filter(s => s.attempted > 0)
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 3);
+
+  renderErrorSummary({
+    total,
+    acRate,
+    errorTotal,
+    primary,
+    primaryMeta,
+    difficultyHotspots,
+    tagHotspots,
+    weakSkills,
+  });
+  renderErrorVerdictChart(verdicts);
+  renderVerdictPrinciples(verdicts, total);
+  renderDifficultyHotspots(difficultyHotspots);
+  renderTagHotspots(tagHotspots);
+  renderContextSignals(aggregated, report, repeat, difficultyHotspots);
+}
+
+function renderErrorSummary(ctx) {
+  const el = document.getElementById('error-summary');
+  if (!ctx.total) {
+    el.innerHTML = '<div class="empty-row muted">没有提交样本，无法判断错误原理</div>';
+    return;
+  }
+  const lines = [];
+  lines.push({
+    label: '整体判断',
+    text: `AC 率 ${formatPctValue(ctx.acRate)}，失败提交 ${ctx.errorTotal} 次。${ctx.errorTotal ? '当前错误诊断以失败占比最高的 verdict 为主线。' : '当前样本没有明显失败类型。'}`,
+  });
+  if (ctx.primary.count > 0) {
+    lines.push({
+      label: '主因',
+      text: `${VERDICT_LABELS[ctx.primary.key]} 指向“${ctx.primaryMeta.title}”：${ctx.primaryMeta.principle}`,
+    });
+  }
+  if (ctx.difficultyHotspots.length) {
+    const b = ctx.difficultyHotspots[0];
+    lines.push({
+      label: '位置',
+      text: `最明显的难度风险在 ${b.label}，去重题目 AC ${b.solved}/${b.attempted}。`,
+    });
+  }
+  if (ctx.tagHotspots.length) {
+    const tags = ctx.tagHotspots.slice(0, 3).map(t => `${t.name} ${formatPctValue(t.rate, 0)}`).join(' · ');
+    lines.push({ label: '标签', text: `低命中标签集中在 ${tags}。` });
+  } else if (ctx.weakSkills.length) {
+    const skills = ctx.weakSkills.map(s => `${s.dimension} ${s.score.toFixed(1)}`).join(' · ');
+    lines.push({ label: '技能', text: `低分技能维度为 ${skills}，可作为训练切入点。` });
+  }
+  el.innerHTML = lines.map(line => `
+    <div class="diagnosis-line">
+      <span>${escapeHTML(line.label)}</span>
+      <p>${escapeHTML(line.text)}</p>
+    </div>
+  `).join('');
+}
+
+function renderErrorVerdictChart(verdicts) {
+  const data = VERDICT_SLOTS.map(k => verdicts[k] || 0);
+  if (!data.some(x => x > 0)) {
+    clearChart('chart-error-verdict');
+    return;
+  }
+  upsertChart('chart-error-verdict', {
+    type: 'bar',
+    data: {
+      labels: VERDICT_SLOTS.map(k => VERDICT_LABELS[k]),
+      datasets: [{ label: 'submissions', data, backgroundColor: VERDICT_COLORS, borderRadius: 2 }],
+    },
+    options: {
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#8b949e' } },
+        y: { beginAtZero: true, grid: { color: '#21262d' }, ticks: { color: '#8b949e' } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (ctx) => {
+          const key = VERDICT_SLOTS[ctx.dataIndex];
+          return `${VERDICT_LABELS[key]}: ${ctx.raw} submissions`;
+        } } },
+      },
+    },
+  });
+}
+
+function renderVerdictPrinciples(verdicts, total) {
+  const el = document.getElementById('error-verdict-principles');
+  const rows = VERDICT_SLOTS
+    .filter(k => k !== 'ok')
+    .map(k => ({ key: k, count: verdicts[k] || 0, meta: VERDICT_DIAGNOSIS[k] || VERDICT_DIAGNOSIS.other }))
+    .filter(r => r.count > 0)
+    .sort((a, b) => b.count - a.count);
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty-row muted">当前样本没有失败 verdict</div>';
+    return;
+  }
+  el.innerHTML = rows.map(r => `
+    <div class="principle-row">
+      <div class="principle-head">
+        <span class="chip ${r.key === 'wrong_answer' || r.key === 'time_limit_exceeded' ? 'warn' : 'err'}">${VERDICT_LABELS[r.key]}</span>
+        <span class="muted small">${r.count} 次 · ${formatPctValue(r.count / Math.max(1, total), 0)}</span>
+      </div>
+      <strong>${escapeHTML(r.meta.title)}</strong>
+      <p>${escapeHTML(r.meta.principle)}</p>
+      <div class="principle-action">${escapeHTML(r.meta.action)}</div>
+    </div>
+  `).join('');
+}
+
+function computeDifficultyHotspots(buckets) {
+  return buckets
+    .filter(b => b.attempted > 0 && b.solved < b.attempted)
+    .map(b => ({
+      label: `${b.lo}-${b.hi}`,
+      solved: b.solved,
+      attempted: b.attempted,
+      missed: b.attempted - b.solved,
+      rate: b.solved / b.attempted,
+    }))
+    .sort((a, b) => (a.rate - b.rate) || (b.attempted - a.attempted))
+    .slice(0, 8);
+}
+
+function computeTagHotspots(tagAttempted, tagSolved) {
+  return Object.entries(tagAttempted || {})
+    .map(([name, attempted]) => {
+      const solved = tagSolved?.[name] || 0;
+      return {
+        name,
+        attempted,
+        solved,
+        missed: Math.max(0, attempted - solved),
+        rate: attempted ? solved / attempted : 0,
+      };
+    })
+    .filter(t => t.attempted > 0 && t.missed > 0)
+    .sort((a, b) => (a.rate - b.rate) || (b.attempted - a.attempted) || a.name.localeCompare(b.name))
+    .slice(0, 10);
+}
+
+function renderDifficultyHotspots(rows) {
+  const el = document.getElementById('error-difficulty-hotspots');
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty-row muted">没有发现 solved 低于 attempted 的难度段</div>';
+    return;
+  }
+  el.innerHTML = `
+    <table class="diagnosis-table">
+      <thead><tr><th>难度</th><th class="num">AC</th><th class="num">尝试</th><th class="num">命中率</th></tr></thead>
+      <tbody>${rows.map(r => `
+        <tr>
+          <td>${escapeHTML(r.label)}</td>
+          <td class="num">${r.solved}</td>
+          <td class="num">${r.attempted}</td>
+          <td class="num ${r.rate >= 0.6 ? 'ok' : r.rate >= 0.35 ? 'warn' : 'err'}">${formatPctValue(r.rate, 0)}</td>
+        </tr>
+      `).join('')}</tbody>
+    </table>
+  `;
+}
+
+function renderTagHotspots(rows) {
+  const el = document.getElementById('error-tag-hotspots');
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty-row muted">没有发现明显低命中标签</div>';
+    return;
+  }
+  el.innerHTML = `
+    <table class="diagnosis-table">
+      <thead><tr><th>标签</th><th class="num">AC</th><th class="num">尝试</th><th class="num">命中率</th></tr></thead>
+      <tbody>${rows.map(r => `
+        <tr>
+          <td>${escapeHTML(r.name)}${r.attempted < 3 ? ' <span class="muted small">样本少</span>' : ''}</td>
+          <td class="num">${r.solved}</td>
+          <td class="num">${r.attempted}</td>
+          <td class="num ${r.rate >= 0.6 ? 'ok' : r.rate >= 0.35 ? 'warn' : 'err'}">${formatPctValue(r.rate, 0)}</td>
+        </tr>
+      `).join('')}</tbody>
+    </table>
+  `;
+}
+
+function renderContextSignals(aggregated, report, repeat, difficultyHotspots) {
+  const signals = [];
+  const rated = aggregated.rated_ac_rate;
+  const practice = aggregated.practice_ac_rate;
+  if (rated !== null && rated !== undefined && practice !== null && practice !== undefined) {
+    const gap = rated - practice;
+    signals.push({
+      title: '比赛压力',
+      cls: gap < -0.15 ? 'err' : gap < -0.05 ? 'warn' : 'ok',
+      value: `${formatPctValue(rated)} / ${formatPctValue(practice)}`,
+      text: gap < -0.15
+        ? '比赛 AC 率明显低于练习，错误更可能来自时间压力、读题压缩和调试不足。'
+        : gap < -0.05
+          ? '比赛 AC 率略低于练习，建议关注限时下的边界检查流程。'
+          : '比赛和练习 AC 率接近，场景压力不是主要错误来源。',
+    });
+  } else {
+    signals.push({
+      title: '比赛压力',
+      cls: 'warn',
+      value: '样本不足',
+      text: '缺少 rated/practice 同时存在的提交样本，暂不能判断场景差异。',
+    });
+  }
+
+  const breakthrough = aggregated.breakthrough_ac_rate;
+  if (breakthrough !== null && breakthrough !== undefined) {
+    signals.push({
+      title: '攻坚题',
+      cls: breakthrough >= 0.55 ? 'ok' : breakthrough >= 0.3 ? 'warn' : 'err',
+      value: formatPctValue(breakthrough),
+      text: breakthrough >= 0.55
+        ? '高于自身 rating+200 的题仍有较好命中率。'
+        : '高难题命中率偏低，错误更可能来自题型识别和关键性质推导。',
+    });
+  } else {
+    signals.push({
+      title: '攻坚题',
+      cls: 'warn',
+      value: '无样本',
+      text: '最近提交中没有可测的 rating+200 以上去重题。',
+    });
+  }
+
+  const weak = [...report.skills]
+    .filter(s => s.attempted > 0)
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 2)
+    .map(s => `${s.dimension} ${s.score.toFixed(1)}`)
+    .join(' · ');
+  signals.push({
+    title: '技能薄弱点',
+    cls: weak ? 'warn' : 'ok',
+    value: weak || '无明显',
+    text: weak
+      ? '这些维度的低分会放大对应 tag 下的 WA/TLE 风险。'
+      : '当前样本没有可定位的低分技能维度。',
+  });
+
+  signals.push({
+    title: '返工成本',
+    cls: repeat.cls || 'warn',
+    value: repeat.value,
+    text: repeat.cls === 'err'
+      ? '单题重复提交偏多，优先优化本地验证和反例构造流程。'
+      : repeat.detail,
+  });
+
+  if (difficultyHotspots.length) {
+    const b = difficultyHotspots[0];
+    signals.push({
+      title: '难度断点',
+      cls: b.rate >= 0.35 ? 'warn' : 'err',
+      value: b.label,
+      text: `该段去重 AC ${b.solved}/${b.attempted}，适合作为下一阶段错误复盘范围。`,
+    });
+  }
+
+  document.getElementById('error-context-signals').innerHTML = signals.map(s => `
+    <div class="signal-card ${s.cls}">
+      <div class="signal-title">${escapeHTML(s.title)}</div>
+      <div class="signal-value">${escapeHTML(s.value)}</div>
+      <p>${escapeHTML(s.text)}</p>
+    </div>
+  `).join('');
+}
+
 // ========== NARRATIVE (SSE) ==========
 
 function startNarrate() {
@@ -637,6 +1051,161 @@ function renderPracticePlan(plan) {
       `).join('')}
     </div>
   `;
+}
+
+// ========== CODE STYLE ==========
+
+function resetCodeStyleCard() {
+  state.codeStyle = null;
+  state.codeStyleFilename = null;
+  const input = document.getElementById('code-style-input');
+  const file = document.getElementById('code-style-file');
+  const fileName = document.getElementById('code-style-file-name');
+  const chip = document.getElementById('code-style-chip');
+  const result = document.getElementById('code-style-result');
+  if (input) input.value = '';
+  if (file) file.value = '';
+  if (fileName) fileName.textContent = '未选择文件';
+  if (chip) {
+    chip.textContent = '';
+    chip.className = 'chip dim';
+  }
+  if (result) {
+    result.innerHTML = '<div class="muted small">粘贴代码后点击「筛查代码」。</div>';
+  }
+}
+
+function codeStyleClass(score) {
+  if (score >= 80) return 'ok';
+  if (score >= 60) return 'warn';
+  return 'err';
+}
+
+function issueClass(severity) {
+  if (severity === 'ok') return 'ok';
+  if (severity === 'risk') return 'err';
+  return 'warn';
+}
+
+async function runCodeStyleAnalysis() {
+  const input = document.getElementById('code-style-input');
+  const btn = document.getElementById('code-style-btn');
+  const chip = document.getElementById('code-style-chip');
+  const result = document.getElementById('code-style-result');
+  const code = input.value.trim();
+  if (!code) {
+    chip.textContent = '缺少代码';
+    chip.className = 'chip warn';
+    result.innerHTML = '<div class="chip warn">请先粘贴代码或选择本地文件。</div>';
+    return;
+  }
+  btn.disabled = true;
+  chip.textContent = '筛查中…';
+  chip.className = 'chip info';
+  result.innerHTML = '<div class="muted small">正在分析代码结构…</div>';
+  const controller = createRequestController('codeStyle');
+  try {
+    const report = await api('/api/code-style', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        filename: state.codeStyleFilename || null,
+      }),
+    });
+    if (state.requestControllers.codeStyle !== controller) return;
+    state.codeStyle = report;
+    renderCodeStyleReport(report);
+    chip.textContent = `${report.language} · ${report.score.toFixed(1)}`;
+    chip.className = 'chip ' + codeStyleClass(report.score);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    chip.textContent = '失败';
+    chip.className = 'chip err';
+    result.innerHTML = `<div class="chip err">代码风格筛查失败: ${escapeHTML(e.message)}</div>`;
+  } finally {
+    if (state.requestControllers.codeStyle === controller) {
+      state.requestControllers.codeStyle = null;
+    }
+    btn.disabled = false;
+  }
+}
+
+function renderCodeStyleReport(report) {
+  const result = document.getElementById('code-style-result');
+  const metrics = report.metrics || {};
+  const metricRows = [
+    ['有效行', metrics.nonempty_lines ?? 0],
+    ['最长行', metrics.max_line_length ?? 0],
+    ['最大函数', metrics.max_function_lines ?? 0],
+    ['最大嵌套', metrics.max_nesting ?? 0],
+    ['宏', metrics.macro_count ?? 0],
+    ['全局状态', metrics.global_mutable_count ?? 0],
+    ['魔法数', metrics.magic_number_count ?? 0],
+    ['注释占比', metrics.comment_ratio !== undefined ? (metrics.comment_ratio * 100).toFixed(1) + '%' : '—'],
+  ];
+  const issues = report.issues || [];
+  result.innerHTML = `
+    <div class="code-style-scoreline">
+      <div>
+        <div class="metric-label">Style Score</div>
+        <div class="metric-value ${codeStyleClass(report.score)}">${report.score.toFixed(1)}</div>
+      </div>
+      <div class="code-style-summary">
+        <div>${escapeHTML(report.summary)}</div>
+        <div class="style-tags">
+          ${(report.style_tags || []).map(tag => `<span>${escapeHTML(tag)}</span>`).join('')}
+        </div>
+      </div>
+    </div>
+    <div class="code-style-metrics">
+      ${metricRows.map(([label, value]) => `
+        <div class="code-style-metric">
+          <span>${escapeHTML(label)}</span>
+          <strong>${escapeHTML(value)}</strong>
+        </div>
+      `).join('')}
+    </div>
+    <div class="grid-2 code-style-detail">
+      <div>
+        <h3>问题信号</h3>
+        ${issues.length ? issues.map(issue => `
+          <div class="style-issue">
+            <div class="style-issue-head">
+              <span class="chip ${issueClass(issue.severity)}">${escapeHTML(issue.severity)}</span>
+              <strong>${escapeHTML(issue.title)}</strong>
+            </div>
+            <p>${escapeHTML(issue.detail)}</p>
+          </div>
+        `).join('') : '<div class="empty-row muted">未发现明显风格风险</div>'}
+      </div>
+      <div>
+        <h3>改进建议</h3>
+        <ul class="style-recommendations">
+          ${(report.recommendations || []).map(x => `<li>${escapeHTML(x)}</li>`).join('')}
+        </ul>
+      </div>
+    </div>
+  `;
+}
+
+async function loadCodeStyleFile(file) {
+  if (!file) return;
+  const chip = document.getElementById('code-style-chip');
+  const input = document.getElementById('code-style-input');
+  const fileName = document.getElementById('code-style-file-name');
+  try {
+    const text = await file.text();
+    input.value = text;
+    state.codeStyleFilename = file.name;
+    fileName.textContent = file.name;
+    chip.textContent = '文件已载入';
+    chip.className = 'chip info';
+  } catch (e) {
+    chip.textContent = '读取失败';
+    chip.className = 'chip err';
+  }
 }
 
 // ========== JUDGE TAB ==========
@@ -994,6 +1563,10 @@ function init() {
   // Narrate
   document.getElementById('narrate-btn').addEventListener('click', startNarrate);
   document.getElementById('problemset-btn').addEventListener('click', loadPracticePlan);
+  document.getElementById('code-style-btn').addEventListener('click', runCodeStyleAnalysis);
+  document.getElementById('code-style-file').addEventListener('change', (e) => {
+    loadCodeStyleFile(e.target.files?.[0]);
+  });
 
   // Baseline
   const thInput = document.getElementById('threshold-input');
@@ -1026,6 +1599,7 @@ function init() {
     abortRequest('baseline');
     abortRequest('metrics');
     abortRequest('recommendations');
+    abortRequest('codeStyle');
   });
   onHashChange();
 }

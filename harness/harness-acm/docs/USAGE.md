@@ -52,6 +52,8 @@ export DASHSCOPE_ENABLE_THINKING=false
 
 Web API 额外提供 `GET /api/recommendations/{handle}`：基于选手 rating、薄弱技能和 Codeforces problemset 生成训练题单。
 
+Web 端的“代码风格筛查”使用 `POST /api/code-style` 分析用户粘贴或上传的源码文本。Codeforces 官方 API 不返回提交源码，因此该功能不会自动抓取历史提交代码。
+
 ---
 
 ## 3. 主 CLI · `src/cli.py`

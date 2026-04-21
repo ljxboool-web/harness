@@ -31,8 +31,10 @@ from analyzer import (
     generate_practice_plan,
 )
 from baseline import diff_baseline, load_baseline, save_baseline
+from code_style import analyze_code_style
 from fetcher import FetchError, fetch_profile, get_problemset_problems
 from metrics import summarize
+from schemas import CodeStyleRequest
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
@@ -220,6 +222,13 @@ def api_recommendations(
         raise HTTPException(status_code=500, detail=f"recommendation error: {e}")
     plan = generate_practice_plan(agg, report, problems, max_problems=limit)
     return plan.model_dump()
+
+
+@app.post("/api/code-style")
+def api_code_style(req: CodeStyleRequest):
+    """Analyze pasted/uploaded source code style. Does not fetch CF source."""
+    report = analyze_code_style(req.code, filename=req.filename)
+    return report.model_dump()
 
 
 @app.get("/api/baseline/{handle}")

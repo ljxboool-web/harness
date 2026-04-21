@@ -188,6 +188,32 @@ class PracticePlan(BaseModel):
     source: str = "heuristic"
 
 
+CodeStyleSeverity = Literal["ok", "warn", "risk"]
+
+
+class CodeStyleRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=200_000)
+    filename: Optional[str] = None
+
+
+class CodeStyleIssue(BaseModel):
+    severity: CodeStyleSeverity
+    category: str
+    title: str
+    detail: str
+
+
+class CodeStyleReport(BaseModel):
+    """对一段源码做静态风格画像，不依赖 Codeforces 源码抓取."""
+    language: str
+    score: float = Field(ge=0, le=100)
+    summary: str
+    style_tags: list[str]
+    metrics: dict[str, float | int | str]
+    issues: list[CodeStyleIssue]
+    recommendations: list[str]
+
+
 class JudgeResult(BaseModel):
     score: int = Field(ge=1, le=5)
     reason: str

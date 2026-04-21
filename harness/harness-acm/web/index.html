@@ -32,6 +32,9 @@
     <a href="#profile" class="nav-item" data-tab="profile">
       <span class="nav-icon">◆</span><span>选手画像</span>
     </a>
+    <a href="#errors" class="nav-item" data-tab="errors">
+      <span class="nav-icon">!</span><span>错误原理</span>
+    </a>
     <a href="#judge" class="nav-item" data-tab="judge">
       <span class="nav-icon">⟲</span><span>Judge Loop</span>
     </a>
@@ -84,6 +87,32 @@
           </div>
           <div id="heatmap-container" class="heatmap"></div>
         </div>
+        <div class="card code-style-card">
+          <div class="card-header">
+            <h2>代码风格筛查</h2>
+            <div class="code-style-controls">
+              <span id="code-style-chip" class="chip dim"></span>
+              <button id="code-style-btn" type="button" class="btn-secondary">筛查代码</button>
+            </div>
+          </div>
+          <div class="code-style-workbench">
+            <label class="code-style-editor">
+              <span class="muted small">粘贴 C++ / Python / Java 代码</span>
+              <textarea id="code-style-input" spellcheck="false" placeholder="Paste code here"></textarea>
+            </label>
+            <div class="code-style-side">
+              <label class="file-picker">
+                <input id="code-style-file" type="file" accept=".cpp,.cc,.cxx,.hpp,.h,.py,.java,.txt">
+                <span>选择文件</span>
+              </label>
+              <div id="code-style-file-name" class="muted small">未选择文件</div>
+              <div class="muted small">Codeforces 官方 API 不返回源码；这里分析你提供的代码文本。</div>
+            </div>
+          </div>
+          <div id="code-style-result" class="code-style-result">
+            <div class="muted small">粘贴代码后点击「筛查代码」。</div>
+          </div>
+        </div>
         <div class="card narrative-card">
           <div class="card-header">
             <h2>教练评语 (AI)</h2>
@@ -112,7 +141,71 @@
       </div>
     </section>
 
-    <!-- Tab 2: judge -->
+    <!-- Tab 2: errors -->
+    <section id="errors" class="tab" data-tab="errors" hidden>
+      <div id="errors-empty" class="empty-state">
+        <div class="empty-mark">!</div>
+        <div>先分析一次选手，再查看错误原理</div>
+      </div>
+      <div id="errors-content" hidden>
+        <div class="grid-4 metric-row">
+          <div class="metric-card">
+            <div class="metric-label">AC Rate</div>
+            <div id="error-ac-rate" class="metric-value">—</div>
+            <div id="error-ac-detail" class="muted small">—</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">主要错误</div>
+            <div id="error-primary" class="metric-value">—</div>
+            <div id="error-primary-detail" class="muted small">—</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">风险等级</div>
+            <div id="error-risk" class="metric-value">—</div>
+            <div id="error-risk-detail" class="muted small">—</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">重复提交</div>
+            <div id="error-repeat" class="metric-value">—</div>
+            <div id="error-repeat-detail" class="muted small">—</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>错误原理判断</h2>
+          <div id="error-summary" class="diagnosis-summary"></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h2>Verdict 错误来源</h2>
+            <canvas id="chart-error-verdict"></canvas>
+          </div>
+          <div class="card">
+            <h2>错误类型解释</h2>
+            <div id="error-verdict-principles" class="principle-list"></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h2>高风险难度段</h2>
+            <div id="error-difficulty-hotspots"></div>
+          </div>
+          <div class="card">
+            <h2>高风险标签</h2>
+            <div id="error-tag-hotspots"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>场景信号</h2>
+          <div id="error-context-signals" class="signal-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 3: judge -->
     <section id="judge" class="tab" data-tab="judge" hidden>
       <div id="judge-empty" class="empty-state">
         <div class="empty-mark">⟲</div>
@@ -135,7 +228,7 @@
       </div>
     </section>
 
-    <!-- Tab 3: baseline -->
+    <!-- Tab 4: baseline -->
     <section id="baseline" class="tab" data-tab="baseline" hidden>
       <div id="baseline-empty" class="empty-state">
         <div class="empty-mark">≈</div>
@@ -171,7 +264,7 @@
       </div>
     </section>
 
-    <!-- Tab 4: metrics -->
+    <!-- Tab 5: metrics -->
     <section id="metrics" class="tab" data-tab="metrics" hidden>
       <div class="card metrics-controls">
         <label class="slider">

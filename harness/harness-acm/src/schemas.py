@@ -24,6 +24,7 @@ class CFProblem(BaseModel):
     name: str
     rating: Optional[int] = None  # 题目难度
     tags: list[str] = Field(default_factory=list)
+    solved_count: int = 0  # problemset.problemStatistics.solvedCount
 
 
 class CFAuthor(BaseModel):
@@ -109,6 +110,8 @@ class AggregatedStats(BaseModel):
     tag_solved: dict[str, int]
     tag_attempted: dict[str, int]
     tag_max_rating: dict[str, int] = Field(default_factory=dict)  # 每个 tag 上 AC 过的最高难度
+    attempted_problem_keys: list[str] = Field(default_factory=list)
+    solved_problem_keys: list[str] = Field(default_factory=list)
     rating: RatingStats
     daily_submission_count: dict[str, int]  # YYYY-MM-DD -> count
     # 个性特征要用的额外字段
@@ -159,6 +162,30 @@ class AbilityReport(BaseModel):
     @property
     def skill_radar(self) -> dict[str, float]:
         return {s.dimension: s.score for s in self.skills}
+
+
+class RecommendedProblem(BaseModel):
+    contest_id: int
+    index: str
+    name: str
+    rating: int
+    tags: list[str]
+    solved_count: int = 0
+    target_skill: SkillDimension
+    reason: str
+    url: str
+
+
+class PracticePlan(BaseModel):
+    """根据选手 rating 和薄弱技能生成的训练题单."""
+    handle: str
+    rating: Optional[int]
+    target_rating_min: int
+    target_rating_max: int
+    weak_skills: list[SkillDimension]
+    summary: str
+    problems: list[RecommendedProblem]
+    source: str = "heuristic"
 
 
 class JudgeResult(BaseModel):

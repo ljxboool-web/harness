@@ -26,9 +26,12 @@ from metrics import emit_metric
 from schemas import (
     AbilityReport,
     AggregatedStats,
+    CFProblem,
     Confidence,
     JudgeEnsembleResult,
     JudgeResult,
+    PracticePlan,
+    RecommendedProblem,
     Profile,
     SkillDimension,
     SkillScore,
@@ -202,6 +205,255 @@ def compute_abilities(stats: AggregatedStats) -> AbilityReport:
         overall_rating=stats.rating.current,
         overall_max_rating=stats.rating.peak,
     )
+
+
+# ---------- 训练题单推荐 ----------
+
+def _problem_key_from_problem(problem: CFProblem) -> str:
+    if problem.contestId:
+        return f"c:{problem.contestId}:{problem.index}"
+    return f"g:{problem.name}"
+
+
+def _problem_url(problem: CFProblem) -> str:
+    return f"https://codeforces.com/problemset/problem/{problem.contestId}/{problem.index}"
+
+
+def _round_cf_rating(value: float) -> int:
+    return int(_clamp(round(value / 100) * 100, 800, 3500))
+
+
+def _target_rating_band(skill: SkillScore, base_rating: int) -> tuple[int, int]:
+    if skill.score < 40:
+        lo, hi = base_rating - 400, base_rating + 100
+    elif skill.score < 70:
+        lo, hi = base_rating - 200, base_rating + 200
+    else:
+        lo, hi = base_rating, base_rating + 300
+    if skill.confidence == "low":
+        lo -= 200
+        hi -= 100
+    lo_i = _round_cf_rating(lo)
+    hi_i = _round_cf_rating(max(hi, lo_i))
+    return lo_i, max(lo_i, hi_i)
+
+
+def _weak_skills(report: AbilityReport, limit: int = 3) -> list[SkillScore]:
+    weak = [s for s in report.skills if s.score < 70]
+    if not weak:
+        weak = list(report.skills)
+    weak.sort(key=lambda s: (s.score, s.attempted))
+    return weak[:limit]
+
+
+def _candidate_problems(
+    *,
+    skill: SkillScore,
+    problems: list[CFProblem],
+    attempted_keys: set[str],
+    picked_keys: set[str],
+    lo: int,
+    hi: int,
+) -> list[CFProblem]:
+    tags = set(TAG_CATEGORIES[skill.dimension])
+    candidates: list[CFProblem] = []
+    for problem in problems:
+        if problem.contestId is None or problem.rating is None:
+            continue
+        key = _problem_key_from_problem(problem)
+        if key in attempted_keys or key in picked_keys:
+            continue
+        if not tags.intersection(problem.tags):
+            continue
+        if lo <= problem.rating <= hi:
+            candidates.append(problem)
+    target = (lo + hi) / 2
+    candidates.sort(key=lambda p: (
+        abs((p.rating or target) - target),
+        -p.solved_count,
+        -(p.contestId or 0),
+        p.index,
+    ))
+    return candidates
+
+
+def _problem_reason(skill: SkillScore, problem: CFProblem, lo: int, hi: int) -> str:
+    matched = [
+        t for t in problem.tags
+        if t in TAG_CATEGORIES[skill.dimension]
+    ][:3]
+    tag_part = "/".join(matched) if matched else skill.dimension
+    return (
+        f"{skill.dimension} 当前 {skill.score:.1f}，推荐先做 "
+        f"{lo}-{hi} 分段；本题 rating {problem.rating}，匹配 {tag_part}。"
+    )
+
+
+def _refine_plan_with_ai(plan: PracticePlan) -> PracticePlan:
+    """用 DashScope 对题单摘要和理由做轻量润色；失败时保留确定性题单."""
+    if not has_api_key() or not plan.problems:
+        return plan
+
+    payload = {
+        "handle": plan.handle,
+        "rating": plan.rating,
+        "weak_skills": plan.weak_skills,
+        "rating_range": [plan.target_rating_min, plan.target_rating_max],
+        "problems": [p.model_dump() for p in plan.problems],
+    }
+    system = """你是 Codeforces 训练教练。只基于输入 problems 生成题单说明。
+不要新增、删除或改写题目 contest_id/index。只输出 JSON:
+{"summary":"<=80字中文总结","items":[{"contest_id":整数,"index":"原 index","reason":"<=50字中文推荐理由"}]}"""
+    try:
+        text = generate_json(
+            system_prompt=system,
+            user_content=json.dumps(payload, ensure_ascii=False),
+            schema_name="practice_plan_refine",
+            schema={
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"},
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "contest_id": {"type": "integer"},
+                                "index": {"type": "string"},
+                                "reason": {"type": "string"},
+                            },
+                            "required": ["contest_id", "index", "reason"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["summary", "items"],
+                "additionalProperties": False,
+            },
+            max_output_tokens=500,
+        )
+        parsed = json.loads(text)
+    except Exception:
+        return plan
+
+    by_key = {(p.contest_id, p.index): p for p in plan.problems}
+    refined: list[RecommendedProblem] = []
+    for item in parsed.get("items", []):
+        key = (item.get("contest_id"), item.get("index"))
+        if key not in by_key:
+            continue
+        problem = by_key[key]
+        refined.append(problem.model_copy(update={
+            "reason": str(item.get("reason", problem.reason))[:80],
+        }))
+    if not refined:
+        refined = plan.problems
+    return plan.model_copy(update={
+        "summary": str(parsed.get("summary", plan.summary))[:120],
+        "problems": refined,
+        "source": "dashscope",
+    })
+
+
+def generate_practice_plan(
+    stats: AggregatedStats,
+    report: AbilityReport,
+    problems: list[CFProblem],
+    max_problems: int = 9,
+    use_ai: bool = True,
+) -> PracticePlan:
+    """根据 rating、薄弱技能和 CF problemset 推荐未尝试题目."""
+    max_problems = max(1, min(max_problems, 30))
+    base_rating = report.overall_rating or stats.rating.current or 1200
+    base_rating = int(_clamp(base_rating, 800, 3500))
+    weak = _weak_skills(report)
+    attempted_keys = set(stats.attempted_problem_keys)
+    picked_keys: set[str] = set()
+    picked: list[RecommendedProblem] = []
+    bands = {s.dimension: _target_rating_band(s, base_rating) for s in weak}
+    per_skill = max(1, math.ceil(max_problems / max(1, len(weak))))
+
+    for skill in weak:
+        lo, hi = bands[skill.dimension]
+        candidates = _candidate_problems(
+            skill=skill, problems=problems, attempted_keys=attempted_keys,
+            picked_keys=picked_keys, lo=lo, hi=hi,
+        )
+        if not candidates:
+            lo = _round_cf_rating(lo - 300)
+            hi = _round_cf_rating(hi + 300)
+            candidates = _candidate_problems(
+                skill=skill, problems=problems, attempted_keys=attempted_keys,
+                picked_keys=picked_keys, lo=lo, hi=hi,
+            )
+            bands[skill.dimension] = (lo, hi)
+
+        for problem in candidates[:per_skill]:
+            if len(picked) >= max_problems:
+                break
+            key = _problem_key_from_problem(problem)
+            picked_keys.add(key)
+            picked.append(RecommendedProblem(
+                contest_id=int(problem.contestId or 0),
+                index=problem.index,
+                name=problem.name,
+                rating=int(problem.rating or base_rating),
+                tags=problem.tags,
+                solved_count=problem.solved_count,
+                target_skill=skill.dimension,
+                reason=_problem_reason(skill, problem, *bands[skill.dimension]),
+                url=_problem_url(problem),
+            ))
+
+    if len(picked) < max_problems:
+        for skill in weak:
+            lo, hi = bands[skill.dimension]
+            candidates = _candidate_problems(
+                skill=skill, problems=problems, attempted_keys=attempted_keys,
+                picked_keys=picked_keys, lo=_round_cf_rating(lo - 400),
+                hi=_round_cf_rating(hi + 400),
+            )
+            for problem in candidates:
+                if len(picked) >= max_problems:
+                    break
+                key = _problem_key_from_problem(problem)
+                picked_keys.add(key)
+                picked.append(RecommendedProblem(
+                    contest_id=int(problem.contestId or 0),
+                    index=problem.index,
+                    name=problem.name,
+                    rating=int(problem.rating or base_rating),
+                    tags=problem.tags,
+                    solved_count=problem.solved_count,
+                    target_skill=skill.dimension,
+                    reason=_problem_reason(skill, problem, lo, hi),
+                    url=_problem_url(problem),
+                ))
+            if len(picked) >= max_problems:
+                break
+
+    if bands:
+        target_min = min(lo for lo, _ in bands.values())
+        target_max = max(hi for _, hi in bands.values())
+    else:
+        target_min = _round_cf_rating(base_rating - 200)
+        target_max = _round_cf_rating(base_rating + 200)
+
+    weak_names = "、".join(s.dimension for s in weak)
+    summary = (
+        f"围绕 {weak_names} 补短板，难度集中在 {target_min}-{target_max}；"
+        f"建议每题完成后复盘错误原因和可复用模板。"
+    )
+    plan = PracticePlan(
+        handle=report.handle,
+        rating=report.overall_rating,
+        target_rating_min=target_min,
+        target_rating_max=target_max,
+        weak_skills=[s.dimension for s in weak],
+        summary=summary,
+        problems=picked,
+    )
+    return _refine_plan_with_ai(plan) if use_ai else plan
 
 
 # ---------- AI 评语 ----------

@@ -1,0 +1,23 @@
+{
+  "handle": "jiangly",
+  "snapshot_at": 1776763675,
+  "skills": {
+    "dp": 100.0,
+    "graph": 100.0,
+    "math": 100.0,
+    "greedy": 100.0,
+    "data_structure": 100.0,
+    "string": 100.0,
+    "search": 100.0,
+    "geometry": 91.7
+  },
+  "traits": {
+    "stability": 44.0,
+    "speed": 67.0,
+    "pressure": 94.7,
+    "breakthrough": 80.0,
+    "activity": 14.0
+  },
+  "rating": 3583,
+  "peak": 4039
+}
